@@ -7,6 +7,7 @@
     <!-- docx.js für echte Word-Dokumente -->
     <script src="https://unpkg.com/docx@8.5.0/build/index.umd.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         :root {
             --primary: #a855f7;
@@ -9231,10 +9232,23 @@ function getInterventionen(code) {
     return ['Individuell angepasste Förderung'];
 }
 
-// Generate PEI using docx.js for proper Word document
+// Generate PEI using the new German template (20250101_Template_DE_CDSE.docx)
 async function generatePEI() {
-    const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, VerticalAlign, PageBreak, ShadingType, HeadingLevel } = docx;
+    // --- 1. Load the DOCX template ---
+    let templateData;
+    try {
+        const response = await fetch('20250101_Template_DE_CDSE.docx');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        templateData = await response.arrayBuffer();
+    } catch (e) {
+        alert('Fehler: Die Vorlage "20250101_Template_DE_CDSE.docx" konnte nicht geladen werden.\nBitte stellen Sie sicher, dass die Datei im gleichen Verzeichnis wie die HTML-Datei liegt und über einen Webserver aufgerufen wird.');
+        return;
+    }
 
+    const zip = await JSZip.loadAsync(templateData);
+    let docXml = await zip.file('word/document.xml').async('string');
+
+    // --- 2. Gather all data ---
     const stammdaten = getStammdaten();
     const ziele = { verhalten: [], kommunikation: [], sozialisation: [], kognition: [] };
     const erreichte = { verhalten: [], kommunikation: [], sozialisation: [], kognition: [] };
@@ -9251,710 +9265,422 @@ async function generatePEI() {
         }
     }
 
-    // Sort ziele ascending (ordre croissant)
     for (const bereich of Object.keys(ziele)) {
         ziele[bereich].sort((a, b) => parseInt(a.code.split('-').pop()) - parseInt(b.code.split('-').pop()));
     }
 
     const lastErreicht = {};
     for (const [bereich, items] of Object.entries(erreichte)) {
-        // Sort ascending (ordre croissant) and get last 3
         const sorted = items.sort((a,b) => parseInt(a.code.split('-').pop()) - parseInt(b.code.split('-').pop()));
         lastErreicht[bereich] = sorted.slice(-3);
     }
 
-    const nameParts = (stammdaten.schueler_name || '').split(' ');
-    const nom = nameParts[0] || '';
-    const prenom = nameParts.slice(1).join(' ') || '';
+    // --- XML helper functions ---
+    function escapeXml(str) {
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function makeRun(text, bold, italic) {
+        let rPr = '';
+        if (bold || italic) {
+            rPr = '<w:rPr>';
+            if (bold) rPr += '<w:b/>';
+            if (italic) rPr += '<w:i/>';
+            rPr += '</w:rPr>';
+        }
+        return '<w:r>' + rPr + '<w:t xml:space="preserve">' + escapeXml(text) + '</w:t></w:r>';
+    }
+    function makePara(runs) {
+        return '<w:p>' + runs + '</w:p>';
+    }
 
-    // Helper functions
-    const cellBorders = { top: {style: BorderStyle.SINGLE, size: 1}, bottom: {style: BorderStyle.SINGLE, size: 1}, left: {style: BorderStyle.SINGLE, size: 1}, right: {style: BorderStyle.SINGLE, size: 1} };
-    const noBorders = { top: {style: BorderStyle.NONE}, bottom: {style: BorderStyle.NONE}, left: {style: BorderStyle.NONE}, right: {style: BorderStyle.NONE} };
-
-    // Create ELDiB Grid Table - compact to fit on 1 page
-    function createELDiBGrid(withColors = true) {
-        const rows = [];
-        const cellWidth = 220; // smaller cells to fit on 1 page
-        const niveauWidth = 500;
-
-        // Header row 1: COMP, COMM, SOC, COG
-        rows.push(new TableRow({
-            height: {value: 200, rule: 'exact'},
-            children: [
-                new TableCell({ children: [new Paragraph('')], width: {size: niveauWidth, type: WidthType.DXA}, borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'COMP', bold: true, size: 12})]})], width: {size: cellWidth, type: WidthType.DXA}, borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'COMM', bold: true, size: 12})]})], width: {size: cellWidth, type: WidthType.DXA}, borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'SOC', bold: true, size: 12})]})], width: {size: cellWidth, type: WidthType.DXA}, borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'COG', bold: true, size: 12})]})], width: {size: cellWidth, type: WidthType.DXA}, borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-            ]
-        }));
-
-        // Header row 2: totals
-        rows.push(new TableRow({
-            height: {value: 200, rule: 'exact'},
-            children: [
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: '33', size: 10})]})], borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: '35', size: 10})]})], borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: '41', size: 10})]})], borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: '62', size: 10})]})], borders: cellBorders, shading: {fill: 'D9D9D9'} }),
-            ]
-        }));
-
-        // For each NIVEAU
-        ['V', 'IV', 'III', 'II', 'I'].forEach(niveau => {
-            const lvl = ELDIB_STRUCTURE[niveau];
-            const maxRows = Math.max(lvl.V.length, lvl.K.length, lvl.S.length, lvl.C.length);
-
-            for (let row = 0; row < maxRows; row++) {
-                const cells = [];
-
-                // NIVEAU label (only first row, merged)
-                if (row === 0) {
-                    cells.push(new TableCell({
-                        children: [new Paragraph({children: [new TextRun({text: `NIV ${niveau}`, bold: true, size: 10})], spacing: {before: 0, after: 0}})],
-                        rowSpan: maxRows,
-                        borders: cellBorders,
-                        verticalAlign: VerticalAlign.CENTER
-                    }));
+    // --- 3. Remove pink instructional comments (color FF6699) ---
+    // Only remove bold/italic pink runs (actual instructions).
+    // Non-bold pink text (like "Schüler:in" labels) is kept but de-colored.
+    function removePinkRuns(xml) {
+        let prev;
+        do {
+            prev = xml;
+            xml = xml.replace(/<w:r\b[^>]*>((?:(?!<\/w:r>)[\s\S])*?w:val="FF6699"(?:(?!<\/w:r>)[\s\S])*?)<\/w:r>/g, function(match, inner) {
+                if (inner.includes('<w:b/>') || inner.includes('<w:i/>')) {
+                    return ''; // Remove bold/italic pink text (instructional comments)
                 }
+                return match; // Keep non-bold pink text (structural labels)
+            });
+        } while (xml !== prev);
+        // Remove remaining pink color markers (de-color kept text)
+        xml = xml.replace(/<w:color w:val="FF6699"\/>/g, '');
+        return xml;
+    }
+    docXml = removePinkRuns(docXml);
 
-                // COMP cell
-                const vItem = lvl.V[row];
-                const vColor = vItem && withColors ? getItemColor('V', vItem) : 'FFFFFF';
-                cells.push(new TableCell({
-                    children: [new Paragraph({children: [new TextRun({text: vItem ? String(vItem) : '', size: 10})], alignment: AlignmentType.CENTER, spacing: {before: 0, after: 0}})],
-                    borders: cellBorders,
-                    shading: vItem ? {fill: vColor, type: ShadingType.CLEAR} : undefined,
-                    verticalAlign: VerticalAlign.CENTER
-                }));
+    // --- 4. Fill shaded boxes on title page ---
+    // Shaded boxes are paragraphs with w:fill="F2F2F2"
+    function fillShadedBox(xml, boxIndex, text) {
+        if (!text) return xml;
+        const marker = 'w:fill="F2F2F2"';
+        let pos = -1;
+        for (let i = 0; i <= boxIndex; i++) {
+            pos = xml.indexOf(marker, pos + 1);
+            if (pos < 0) return xml;
+        }
+        const pEnd = xml.indexOf('</w:p>', pos);
+        if (pEnd < 0) return xml;
+        const textRun = '<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">' + escapeXml(text) + '</w:t></w:r>';
+        return xml.substring(0, pEnd) + textRun + xml.substring(pEnd);
+    }
+    docXml = fillShadedBox(docXml, 0, stammdaten.schueler_name);
+    docXml = fillShadedBox(docXml, 1, stammdaten.matricule);
+    docXml = fillShadedBox(docXml, 2, (stammdaten.foerderort && stammdaten.klasse) ? stammdaten.foerderort + ' / ' + stammdaten.klasse : stammdaten.foerderort || stammdaten.klasse);
+    // Box 3 (In Zusammenarbeit mit) - leave empty
 
-                // COMM cell
-                const kItem = lvl.K[row];
-                const kColor = kItem && withColors ? getItemColor('K', kItem) : 'FFFFFF';
-                cells.push(new TableCell({
-                    children: [new Paragraph({children: [new TextRun({text: kItem ? String(kItem) : '', size: 10})], alignment: AlignmentType.CENTER, spacing: {before: 0, after: 0}})],
-                    borders: cellBorders,
-                    shading: kItem ? {fill: kColor, type: ShadingType.CLEAR} : undefined,
-                    verticalAlign: VerticalAlign.CENTER
-                }));
+    // --- 5. Fill Anwesenheitsliste with available data ---
+    if (stammdaten.schueler_name) {
+        docXml = docXml.replace('>MUSTERMANN Jacques<', '>' + escapeXml(stammdaten.schueler_name) + '<');
+    }
+    if (stammdaten.eltern1_name) {
+        docXml = docXml.replace('>HIRSCH Madeleine; Erziehungsberechtigte<', '>' + escapeXml(stammdaten.eltern1_name) + '; Erziehungsberechtigte<');
+    } else {
+        docXml = docXml.replace('>HIRSCH Madeleine; Erziehungsberechtigte<', '><');
+    }
+    if (stammdaten.einschaetzende) {
+        docXml = docXml.replace('>SCHILTZ Micheline; LP<', '>' + escapeXml(stammdaten.einschaetzende) + '; CDSE<');
+    } else {
+        docXml = docXml.replace('>SCHILTZ Micheline; LP<', '><');
+    }
+    docXml = docXml.replace('>LAMBERTY Georgius; ESEB<', '><');
 
-                // SOC cell
-                const sItem = lvl.S[row];
-                const sColor = sItem && withColors ? getItemColor('SOZ', sItem) : 'FFFFFF';
-                cells.push(new TableCell({
-                    children: [new Paragraph({children: [new TextRun({text: sItem ? String(sItem) : '', size: 10})], alignment: AlignmentType.CENTER, spacing: {before: 0, after: 0}})],
-                    borders: cellBorders,
-                    shading: sItem ? {fill: sColor, type: ShadingType.CLEAR} : undefined,
-                    verticalAlign: VerticalAlign.CENTER
-                }));
-
-                // COG cell
-                const cItem = lvl.C[row];
-                const cColor = cItem && withColors ? getItemColor('KOG', cItem) : 'FFFFFF';
-                cells.push(new TableCell({
-                    children: [new Paragraph({children: [new TextRun({text: cItem ? String(cItem) : '', size: 10})], alignment: AlignmentType.CENTER, spacing: {before: 0, after: 0}})],
-                    borders: cellBorders,
-                    shading: cItem ? {fill: cColor, type: ShadingType.CLEAR} : undefined,
-                    verticalAlign: VerticalAlign.CENTER
-                }));
-
-                rows.push(new TableRow({ height: {value: 180, rule: 'exact'}, children: cells }));
+    // --- 6. Fill ELDiB page name and birthdate ---
+    // Find "Name des Schülers/ der Schülerin:" paragraph on ELDiB page and append name
+    {
+        const nameLabel = 'Name des Sch';
+        // Find the second occurrence (first is on title page, second on ELDiB page)
+        let firstOcc = docXml.indexOf(nameLabel);
+        if (firstOcc >= 0) {
+            let secondOcc = docXml.indexOf(nameLabel, firstOcc + 1);
+            if (secondOcc >= 0) {
+                const pEnd = docXml.indexOf('</w:p>', secondOcc);
+                if (pEnd >= 0 && stammdaten.schueler_name) {
+                    const nameRun = '<w:r><w:rPr><w:rFonts w:cstheme="minorHAnsi"/><w:lang w:val="de-LU"/></w:rPr><w:t xml:space="preserve"> ' + escapeXml(stammdaten.schueler_name) + '</w:t></w:r>';
+                    docXml = docXml.substring(0, pEnd) + nameRun + docXml.substring(pEnd);
+                }
             }
-        });
-
-        // Date row for second grid
-        if (!withColors) {
-            rows.push(new TableRow({
-                children: [
-                    new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Date:', size: 12})]})], columnSpan: 5, borders: cellBorders })
-                ]
-            }));
         }
-
-        return new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } });
+    }
+    // Fill Geburtsdatum
+    {
+        const gebLabel = 'Geburtsdatum: ';
+        const gebPos = docXml.indexOf(gebLabel);
+        if (gebPos >= 0 && stammdaten.geburtsdatum) {
+            const pEnd = docXml.indexOf('</w:p>', gebPos);
+            if (pEnd >= 0) {
+                const dateRun = '<w:r><w:rPr><w:rFonts w:cstheme="minorHAnsi"/><w:lang w:val="de-LU"/></w:rPr><w:t xml:space="preserve">' + escapeXml(stammdaten.geburtsdatum) + '</w:t></w:r>';
+                docXml = docXml.substring(0, pEnd) + dateRun + docXml.substring(pEnd);
+            }
+        }
     }
 
-    // Build document sections
-    const children = [];
+    // --- 7. Color ELDiB grid cells ---
+    {
+        const tblWidthMarker = 'w:w="7230"';
+        const markerPos = docXml.indexOf(tblWidthMarker);
+        if (markerPos >= 0) {
+            const tblStart = docXml.lastIndexOf('<w:tbl>', markerPos);
+            const tblEndIdx = docXml.indexOf('</w:tbl>', markerPos);
+            if (tblStart >= 0 && tblEndIdx >= 0) {
+                const tblEnd = tblEndIdx + 8;
+                let tableXml = docXml.substring(tblStart, tblEnd);
+                const domains = ['V', 'K', 'SOZ', 'KOG'];
 
-    // Page 1: Title
-    children.push(
-        new Paragraph({ spacing: { before: 4000 } }),
-        new Paragraph({
-            children: [new TextRun({ text: 'Plan éducatif individualisé (PEI)', bold: true, size: 64, color: '2F5496' })],
-            alignment: AlignmentType.CENTER
-        }),
-        new Paragraph({ children: [new PageBreak()] })
-    );
-
-    // Page 2: Informations générales
-    children.push(
-        new Paragraph({ children: [new TextRun({ text: 'Informations générales sur l\'élève', bold: true, size: 24, underline: {} })], alignment: AlignmentType.CENTER, spacing: { after: 200 } })
-    );
-
-    // Info boxes
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Nom', size: 16, color: '666666'})]}), new Paragraph({children: [new TextRun({text: nom, size: 20})]})], borders: cellBorders, width: {size: 50, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Prénom', size: 16, color: '666666'})]}), new Paragraph({children: [new TextRun({text: prenom, size: 20})]})], borders: cellBorders, width: {size: 50, type: WidthType.PERCENTAGE} })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Matricule', size: 16, color: '666666'})]}), new Paragraph({children: [new TextRun({text: stammdaten.matricule || '', size: 20})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Année scolaire actuelle', size: 16, color: '666666'})]}), new Paragraph({children: [new TextRun({text: stammdaten.schuljahr || '', size: 20})]})], borders: cellBorders })
-            ]})
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Adresse de l\'élève', size: 16, color: '666666'})]}), new Paragraph('')], borders: cellBorders })] }),
-            new TableRow({ children: [new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Première langue parlée', size: 16, color: '666666'})]}), new Paragraph('')], borders: cellBorders })] })
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Coordonnées des représentants légaux
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Coordonnées des représentants légaux', bold: true, size: 20 })], spacing: { before: 200, after: 100 } }));
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Nom et prénom :', size: 16})]}), new Paragraph({children: [new TextRun({text: stammdaten.eltern1_name || '', size: 18})]})], borders: cellBorders, width: {size: 50, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Nom et prénom :', size: 16})]}), new Paragraph('')], borders: cellBorders, width: {size: 50, type: WidthType.PERCENTAGE} })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Numéro de téléphone :', size: 16})]}), new Paragraph({children: [new TextRun({text: stammdaten.eltern1_tel || '', size: 18})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Numéro de téléphone :', size: 16})]}), new Paragraph('')], borders: cellBorders })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Adresse mail :', size: 16})]}), new Paragraph({children: [new TextRun({text: stammdaten.eltern1_email || '', size: 18})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Adresse mail :', size: 16})]}), new Paragraph('')], borders: cellBorders })
-            ]})
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Parcours scolaire
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Parcours scolaire', bold: true, size: 20 })], spacing: { before: 200, after: 100 } }));
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Progression scolaire', bold: true, size: 18})]})], borders: cellBorders, width: {size: 30, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph('........................')], borders: cellBorders, width: {size: 70, type: WidthType.PERCENTAGE} })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Remarques éventuelles', bold: true, size: 18})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-            ]})
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Scolarisation actuelle
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Scolarisation actuelle', bold: true, size: 20 })], spacing: { before: 200, after: 100 } }));
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Titulaire/Régent(e)', bold: true, size: 16})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Cycle/Classe', bold: true, size: 16})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: stammdaten.klasse || '', size: 18})]})], borders: cellBorders })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'École / Lycée', bold: true, size: 16})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: stammdaten.foerderort || '', size: 18})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Bâtiment', bold: true, size: 16})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-            ]})
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Scolarisation spécialisée
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Scolarisation spécialisée', bold: true, size: 20 })], spacing: { before: 200, after: 100 } }));
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Personne de référence', bold: true, size: 16})]})], borders: cellBorders, width: {size: 30, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: stammdaten.einschaetzende || '', size: 18})]})], borders: cellBorders })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Lieu de scolarisation', bold: true, size: 16})]})], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-            ]})
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Page break before ELDiB
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-
-    // ELDiB Section
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Besoins éducatifs spécifiques', bold: true, size: 20 })], spacing: { after: 100 } }));
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Développement ELDiB', bold: true, size: 18 })], spacing: { after: 100 } }));
-
-    // Two ELDiB grids side by side using a wrapper table
-    children.push(new Table({
-        rows: [new TableRow({
-            children: [
-                new TableCell({ children: [createELDiBGrid(true)], borders: noBorders, width: {size: 48, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph('')], borders: noBorders, width: {size: 4, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [createELDiBGrid(false)], borders: noBorders, width: {size: 48, type: WidthType.PERCENTAGE} })
-            ]
-        })],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Copyright
-    children.push(new Paragraph({
-        children: [new TextRun({ text: '© Distributed in the English original by the Developmental Therapy Institute, Inc., 1992.', size: 12, italics: true })],
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 100 }
-    }));
-    children.push(new Paragraph({
-        children: [new TextRun({ text: 'Légende: COMP-Comportement; COMM-Communication; SOC-Socialisation; COG-Cognition', size: 14 })],
-        alignment: AlignmentType.CENTER
-    }));
-    children.push(new Paragraph({
-        children: [
-            new TextRun({ text: 'vert', size: 14, shading: {fill: '90EE90'} }),
-            new TextRun({ text: '-objectif atteint; ', size: 14 }),
-            new TextRun({ text: 'jaune', size: 14, shading: {fill: 'FFFF00'} }),
-            new TextRun({ text: '-objectif potentiel', size: 14 })
-        ],
-        alignment: AlignmentType.CENTER
-    }));
-
-    // Page break - Description section on new page
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-
-    // Description section
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Description du/des besoin(s) éducatif(s) spécifique(s)', bold: true, size: 20 })], spacing: { before: 200, after: 100 } }));
-    children.push(new Table({
-        rows: ['CDSE :', 'Lycée :', 'Parents :', 'Élève :'].map(label => new TableRow({
-            children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: label, bold: true, size: 16})]})], borders: cellBorders, width: {size: 15, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders, width: {size: 85, type: WidthType.PERCENTAGE} })
-            ]
-        })),
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Points forts
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Points forts, ressources et centres d\'intérêts', bold: true, size: 20 })], spacing: { before: 200, after: 100 } }));
-    children.push(new Table({
-        rows: [new TableRow({ children: [new TableCell({ children: [new Paragraph('')], borders: cellBorders })] })],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Page break for Objectifs
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-
-    // Objectifs de l'intervention - Page 4
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Objectifs de l\'intervention et méthodes', bold: true, size: 24, underline: {} })], alignment: AlignmentType.CENTER, spacing: { after: 300 } }));
-
-    // Compétences dans les domaines de développement et d'apprentissage
-    children.push(new Paragraph({ children: [new TextRun({ text: '☐ Compétences dans les domaines de développement et d\'apprentissage', bold: true, size: 22 })], spacing: { before: 200, after: 200 } }));
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Domaine(s)', bold: true, size: 22})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 15, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Compétences actuelles', bold: true, size: 22})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 20, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Objectif(s)', bold: true, size: 22})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 25, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Méthode(s) et stratégie(s)', bold: true, size: 22})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 20, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Observation(s) et adaptation(s)', bold: true, size: 22})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 20, type: WidthType.PERCENTAGE} })
-            ]}),
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph(''), new Paragraph(''), new Paragraph(''), new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-            ]})
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Page break - Compétences transversales header
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-    children.push(new Paragraph({ children: [new TextRun({ text: '☐ Compétences transversales', bold: true, size: 22 })], spacing: { after: 300 } }));
-
-    // Helper function for competence table (vertical single-column layout)
-    function createCompetenceTable(domainName, grobzielText, goals, erreichtItems) {
-        const rows = [];
-
-        // Header row: Domaine(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Domaine(s)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: Domain name with codes
-        const domainContent = [new Paragraph({children: [new TextRun({text: domainName, bold: true, size: 22})], spacing: {after: 80}})];
-        if (grobzielText) {
-            domainContent.push(new Paragraph({children: [new TextRun({text: grobzielText, size: 22})], spacing: {after: 80}}));
-        }
-        if (goals && goals.length > 0) {
-            domainContent.push(new Paragraph({children: [new TextRun({text: `(${goals.map(g => g.code).join(', ')})`, size: 22})]}));
-        }
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: domainContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Compétences actuelles
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Compétences actuelles', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: erreicht items with spacing
-        const competencesContent = erreichtItems && erreichtItems.length > 0
-            ? erreichtItems.map(item => new Paragraph({
-                children: [new TextRun({text: `${item.code}: ${item.keyword} - ${item.description}`, size: 22})],
-                spacing: {after: 120}
-            }))
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: competencesContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Objectif(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [
-                    new Paragraph({children: [new TextRun({text: 'Objectif(s)', bold: true, size: 22})]}),
-                    new Paragraph({children: [new TextRun({text: '(Feinziel, formulation de l\'objectif pour l\'élève)', size: 18})]})
-                ],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: ziel items with spacing
-        const objectifsContent = goals && goals.length > 0
-            ? goals.flatMap(g => [
-                new Paragraph({
-                    children: [new TextRun({text: `${g.code}: ${g.keyword} - ${g.description}`, bold: true, size: 22})],
-                    spacing: {before: 60}
-                }),
-                new Paragraph({
-                    children: [new TextRun({text: `→ "${g.zieltext}"`, size: 22})],
-                    spacing: {after: 120}
-                })
-            ])
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: objectifsContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Méthode(s) et stratégie(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [
-                    new Paragraph({children: [new TextRun({text: 'Méthode(s) et stratégie(s)', bold: true, size: 22})]}),
-                    new Paragraph({children: [new TextRun({text: '(mise en œuvre CDSE)', size: 18})]})
-                ],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: interventions with spacing
-        const methodesContent = goals && goals.length > 0
-            ? goals.flatMap(g => {
-                const interventions = getInterventionen(g.code);
-                return [
-                    new Paragraph({children: [new TextRun({text: `${g.code}:`, bold: true, size: 22})], spacing: {before: 60}}),
-                    ...interventions.map(i => new Paragraph({children: [new TextRun({text: `• ${i}`, size: 22})]})),
-                    new Paragraph({spacing: {after: 120}})
-                ];
-            })
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: methodesContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Observation(s) et adaptation(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [
-                    new Paragraph({children: [new TextRun({text: 'Observation(s) et adaptation(s)', bold: true, size: 22})]}),
-                    new Paragraph({children: [new TextRun({text: '(mise en œuvre titulaire/autres intervenants)', size: 18})]})
-                ],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: empty for observations
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-        ]}));
-
-        return new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } });
-    }
-
-    // Comportement - Page 5
-    const verhaltenGoals = ziele.verhalten;
-    const verhaltenErreicht = lastErreicht.verhalten || [];
-    children.push(createCompetenceTable('Comportement', '(Grobziel p.ex COMP-10: attendre)', verhaltenGoals, verhaltenErreicht));
-
-    // Page break - Communication - Page 6
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-    const kommunikationGoals = ziele.kommunikation;
-    const kommunikationErreicht = lastErreicht.kommunikation || [];
-    children.push(createCompetenceTable('Communication', null, kommunikationGoals, kommunikationErreicht));
-
-    // Page break - Socialisation - Page 7
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-    const sozialisationGoals = ziele.sozialisation;
-    const sozialisationErreicht = lastErreicht.sozialisation || [];
-    children.push(createCompetenceTable('Socialisation', null, sozialisationGoals, sozialisationErreicht));
-
-    // Page break - Cognition - Page 8
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-    const kognitionGoals = ziele.kognition;
-    const kognitionErreicht = lastErreicht.kognition || [];
-    children.push(createCompetenceTable('Cognition', null, kognitionGoals, kognitionErreicht));
-
-    // Helper: Get the correct text for a goal based on its stufe
-    function getGoalText(goal, stufe) {
-        if (goal.stufen) {
-            return goal.stufen[stufe] || goal.title;
-        }
-        // Legacy support
-        return goal.ziel || goal.title;
-    }
-
-    // Helper: Create vertical table for zusätzliche Ziele category (single column, header-value rows)
-    // Now supports 3-level system: stufe3 (erreicht), stufe2 (teilweise), stufe1 (Ziel)
-    function createZusatzZieleTable(categoryName, categoryKey) {
-        const erreichtGoals = getZusatzErreicht(categoryKey); // stufe3
-        const teilweiseGoals = getZusatzTeilweise(categoryKey); // stufe2
-        const zielGoals = getZusatzZiele(categoryKey); // stufe1
-        const rows = [];
-
-        // Header row: Domaine(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Domaine(s)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: Category name
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: categoryName, bold: true, size: 22})]})],
-                borders: cellBorders
-            })
-        ]}));
-
-        // Header row: Compétences actuelles (Stufe 3 - erreicht)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Compétences actuelles (erreicht)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'D4EDDA'} // Light green
-            })
-        ]}));
-
-        // Value row: erreicht items (stufe3)
-        const erreichtContent = erreichtGoals.length > 0
-            ? erreichtGoals.flatMap(g => [
-                new Paragraph({children: [new TextRun({text: g.title, bold: true, size: 22})], spacing: {before: 60}}),
-                new Paragraph({children: [new TextRun({text: getGoalText(g, 'stufe3'), size: 22})], spacing: {after: 160}})
-            ])
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: erreichtContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Compétences en développement (Stufe 2 - mit Unterstützung)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Compétences en développement (mit Unterstützung)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'CCE5FF'} // Light blue
-            })
-        ]}));
-
-        // Value row: teilweise items (stufe2)
-        const teilweiseContent = teilweiseGoals.length > 0
-            ? teilweiseGoals.flatMap(g => [
-                new Paragraph({children: [new TextRun({text: g.title, bold: true, size: 22})], spacing: {before: 60}}),
-                new Paragraph({children: [new TextRun({text: getGoalText(g, 'stufe2'), size: 22})], spacing: {after: 160}})
-            ])
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: teilweiseContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Objectif(s) (Stufe 1 - Ziel/in Arbeit)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Objectif(s) (Ziel)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'FFF3CD'} // Light orange/yellow
-            })
-        ]}));
-
-        // Value row: ziel items (stufe1)
-        const zielContent = zielGoals.length > 0
-            ? zielGoals.flatMap(g => [
-                new Paragraph({children: [new TextRun({text: g.title, bold: true, size: 22})], spacing: {before: 60}}),
-                new Paragraph({children: [new TextRun({text: getGoalText(g, 'stufe1'), size: 22})], spacing: {after: 160}})
-            ])
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: zielContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Méthode(s) et stratégie(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Méthode(s) et stratégie(s)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: interventions from all selected items
-        const allSelectedGoals = [...zielGoals, ...teilweiseGoals];
-        const methodContent = allSelectedGoals.length > 0
-            ? allSelectedGoals.flatMap(g => [
-                new Paragraph({children: [new TextRun({text: g.title + ':', bold: true, size: 22})], spacing: {before: 60}}),
-                ...g.intervention.map(i => new Paragraph({children: [new TextRun({text: '• ' + i, size: 22})]})),
-                new Paragraph({spacing: {after: 120}})
-            ])
-            : [new Paragraph('')];
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: methodContent, borders: cellBorders })
-        ]}));
-
-        // Header row: Observation(s) et adaptation(s)
-        rows.push(new TableRow({ children: [
-            new TableCell({
-                children: [new Paragraph({children: [new TextRun({text: 'Observation(s) et adaptation(s)', bold: true, size: 22})]})],
-                borders: cellBorders,
-                shading: {fill: 'F0F0F0'}
-            })
-        ]}));
-
-        // Value row: empty for observations
-        rows.push(new TableRow({ children: [
-            new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-        ]}));
-
-        return new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } });
-    }
-
-    // Page break - Démarches mentales etc. - Page 9
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-
-    // Add vertical tables for each category
-    children.push(createZusatzZieleTable('Démarches mentales', 'demarches_mentales'));
-    children.push(new Paragraph({ spacing: { after: 200 } }));
-    children.push(createZusatzZieleTable('Manières d\'apprendre', 'manieres_apprendre'));
-    children.push(new Paragraph({ spacing: { after: 200 } }));
-    children.push(createZusatzZieleTable('Attitudes relationnelles', 'attitudes_relationnelles'));
-    children.push(new Paragraph({ spacing: { after: 200 } }));
-    children.push(createZusatzZieleTable('Attitudes affectives', 'attitudes_affectives'));
-
-    // Page break - Compétences essentielles - Page 10
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-    children.push(new Paragraph({ children: [new TextRun({ text: '☐ Compétences essentielles à la vie autonome et la participation maximale', bold: true, size: 22 })], spacing: { after: 300 } }));
-
-    // Compétences essentielles table with selected goals (vertical layout)
-    children.push(createZusatzZieleTable('Compétences essentielles', 'competences_essentielles'));
-
-    children.push(new Paragraph({ spacing: { after: 300 } }));
-
-    // Culture et loisirs table with selected goals (vertical layout)
-    children.push(createZusatzZieleTable('Culture et loisirs', 'culture_loisirs'));
-
-    // Page break for Signatures - Page 11
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-
-    // Signatures
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Signatures', bold: true, size: 24, underline: {} })], alignment: AlignmentType.CENTER, spacing: { after: 200 } }));
-
-    children.push(new Table({
-        rows: [
-            new TableRow({ children: [
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Nom', bold: true, size: 18})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 50, type: WidthType.PERCENTAGE} }),
-                new TableCell({ children: [new Paragraph({children: [new TextRun({text: 'Signature(s)', bold: true, size: 18})]})], borders: cellBorders, shading: {fill: 'F0F0F0'}, width: {size: 50, type: WidthType.PERCENTAGE} })
-            ]}),
-            ...['', '', '', ''].map(() => new TableRow({ children: [
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders }),
-                new TableCell({ children: [new Paragraph('')], borders: cellBorders })
-            ]}))
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Certification signatures
-    children.push(new Paragraph({ spacing: { before: 400 } }));
-    children.push(new Table({
-        rows: [new TableRow({ children: [
-            new TableCell({ children: [
-                new Paragraph({children: [new TextRun({text: 'Pour le,', bold: true, size: 18})]}),
-                new Paragraph(''),
-                new Paragraph({children: [new TextRun({text: 'Nom Prénom', size: 18})]}),
-                new Paragraph(''),
-                new Paragraph({children: [new TextRun({text: '_____________________________', size: 18})]}),
-                new Paragraph({children: [new TextRun({text: 'Signature', size: 16})]})
-            ], borders: noBorders, width: {size: 50, type: WidthType.PERCENTAGE} }),
-            new TableCell({ children: [
-                new Paragraph({children: [new TextRun({text: 'Certifié le,', bold: true, size: 18})]}),
-                new Paragraph(''),
-                new Paragraph(''),
-                new Paragraph(''),
-                new Paragraph({children: [new TextRun({text: '_____________________________', size: 18})]}),
-                new Paragraph({children: [new TextRun({text: 'Signature', size: 16})]})
-            ], borders: noBorders, width: {size: 50, type: WidthType.PERCENTAGE} })
-        ]})],
-        width: { size: 100, type: WidthType.PERCENTAGE }
-    }));
-
-    // Create document with Calibri 11pt as default font
-    const doc = new Document({
-        styles: {
-            default: {
-                document: {
-                    run: {
-                        font: "Calibri",
-                        size: 22 // 11pt = 22 half-points
-                    },
-                    paragraph: {
-                        spacing: { line: 276 } // 1.15 line spacing
+                // Process each row
+                let newTable = '';
+                let tPos = 0;
+                while (tPos < tableXml.length) {
+                    const trIdx = tableXml.indexOf('<w:tr ', tPos);
+                    if (trIdx < 0) {
+                        newTable += tableXml.substring(tPos);
+                        break;
                     }
+                    newTable += tableXml.substring(tPos, trIdx);
+                    const trEndIdx = tableXml.indexOf('</w:tr>', trIdx);
+                    if (trEndIdx < 0) { newTable += tableXml.substring(trIdx); break; }
+                    const trEndFull = trEndIdx + 7;
+                    let rowXml = tableXml.substring(trIdx, trEndFull);
+
+                    // Process cells in this row
+                    let col595 = 0;
+                    let newRow = '';
+                    let rPos = 0;
+                    while (rPos < rowXml.length) {
+                        const tcIdx = rowXml.indexOf('<w:tc>', rPos);
+                        if (tcIdx < 0) {
+                            // Also try <w:tc > (with space/attributes) - not needed since tc has no attrs
+                            newRow += rowXml.substring(rPos);
+                            break;
+                        }
+                        newRow += rowXml.substring(rPos, tcIdx);
+                        const tcEndIdx = rowXml.indexOf('</w:tc>', tcIdx);
+                        if (tcEndIdx < 0) { newRow += rowXml.substring(tcIdx); break; }
+                        const tcEndFull = tcEndIdx + 7;
+                        let cellXml = rowXml.substring(tcIdx, tcEndFull);
+
+                        // Check cell width
+                        const widthMatch = cellXml.match(/w:tcW w:w="(\d+)"/);
+                        const width = widthMatch ? parseInt(widthMatch[1]) : 0;
+
+                        if (width === 595 && col595 < 4) {
+                            // First grid cell - check for number content
+                            const numMatches = cellXml.match(/<w:t[^>]*>(\d+)<\/w:t>/g);
+                            if (numMatches) {
+                                for (const nm of numMatches) {
+                                    const n = nm.match(/>(\d+)</);
+                                    if (n) {
+                                        const num = parseInt(n[1]);
+                                        const prefix = domains[col595];
+                                        const color = getItemColor(prefix, num);
+                                        if (color !== 'FFFFFF') {
+                                            cellXml = cellXml.replace(
+                                                /(<w:shd[^>]*w:fill=")auto(")/,
+                                                '$1' + color + '$2'
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            col595++;
+                        } else if (width === 595) {
+                            col595++;
+                        }
+
+                        newRow += cellXml;
+                        rPos = tcEndFull;
+                    }
+
+                    newTable += newRow;
+                    tPos = trEndFull;
+                }
+
+                docXml = docXml.substring(0, tblStart) + newTable + docXml.substring(tblEnd);
+            }
+        }
+    }
+
+    // --- 8. Fill Datum fields in ELDiB grid ---
+    if (stammdaten.einschaetzungsdatum) {
+        // First "Datum:" in the grid (first grid)
+        const datumMarker = '>Datum:<';
+        const datumPos = docXml.indexOf(datumMarker);
+        if (datumPos >= 0) {
+            const pEnd = docXml.indexOf('</w:p>', datumPos);
+            if (pEnd >= 0) {
+                const dateRun = '<w:r><w:rPr><w:rFonts w:cstheme="minorHAnsi"/><w:sz w:val="14"/><w:szCs w:val="14"/></w:rPr><w:t xml:space="preserve"> ' + escapeXml(stammdaten.einschaetzungsdatum) + '</w:t></w:r>';
+                docXml = docXml.substring(0, pEnd) + dateRun + docXml.substring(pEnd);
+            }
+        }
+    }
+
+    // --- 9. Fill Zielerfassung und Umsetzung section ---
+    // Fill "Datum:" in the Zielerfassung section
+    {
+        const zielDatumMarker = '>Datum:<';
+        // Find the Datum in the Zielerfassung section (after "Zielerfassung")
+        const zielerfassungPos = docXml.indexOf('Zielerfassung');
+        if (zielerfassungPos >= 0 && stammdaten.einschaetzungsdatum) {
+            const datumPos = docXml.indexOf(zielDatumMarker, zielerfassungPos);
+            if (datumPos >= 0) {
+                const pEnd = docXml.indexOf('</w:p>', datumPos);
+                if (pEnd >= 0) {
+                    const dateRun = '<w:r><w:t xml:space="preserve"> ' + escapeXml(stammdaten.einschaetzungsdatum) + '</w:t></w:r>';
+                    docXml = docXml.substring(0, pEnd) + dateRun + docXml.substring(pEnd);
                 }
             }
-        },
-        sections: [{
-            properties: {
-                page: {
-                    margin: { top: 720, bottom: 720, left: 720, right: 720 } // 0.5 inch margins
-                }
-            },
-            children
-        }]
-    });
+        }
+    }
 
-    // Generate and download
-    const blob = await Packer.toBlob(doc);
-    saveAs(blob, `PEI_${stammdaten.schueler_name || 'export'}.docx`);
+    // Fill each domain in the Zielerfassung table
+    function buildDomainContent(domainGoals, domainErreicht) {
+        let content = '';
+        // Reached competences
+        if (domainErreicht && domainErreicht.length > 0) {
+            content += makePara(makeRun('Erreichte Kompetenzen:', true));
+            for (const item of domainErreicht) {
+                content += makePara(makeRun(item.code + ': ' + item.keyword + ' - ' + item.description));
+            }
+            content += makePara('');
+        }
+        // Goals
+        if (domainGoals && domainGoals.length > 0) {
+            for (const goal of domainGoals) {
+                content += makePara(makeRun(goal.code + ': ' + goal.keyword, true));
+                content += makePara(makeRun(goal.description));
+                content += makePara(makeRun('Zielformulierung für den Schüler/die Schülerin:', true));
+                content += makePara(makeRun('„' + goal.zieltext + '"'));
+            }
+            // Umsetzung CDSE
+            content += makePara(makeRun('Umsetzung CDSE:', true));
+            for (const goal of domainGoals) {
+                const interventions = getInterventionen(goal.code);
+                content += makePara(makeRun(goal.code + ':', true));
+                for (const interv of interventions) {
+                    content += makePara(makeRun('• ' + interv));
+                }
+            }
+            content += makePara('');
+            content += makePara(makeRun('Umsetzung LP und ESEB Unterstützung:', true));
+            content += makePara('');
+        } else {
+            content += makePara('');
+        }
+        return content;
+    }
+
+    function replaceDomainCell(xml, domainLabel, newContent) {
+        const labelPos = xml.indexOf('>' + domainLabel + '<');
+        if (labelPos < 0) return xml;
+        // Find the row containing this label
+        const trStart = xml.lastIndexOf('<w:tr', labelPos);
+        const trEnd = xml.indexOf('</w:tr>', labelPos);
+        if (trStart < 0 || trEnd < 0) return xml;
+        const trEndFull = trEnd + 7;
+        const rowXml = xml.substring(trStart, trEndFull);
+        // Find the second <w:tc> (content cell)
+        const firstTcEnd = rowXml.indexOf('</w:tc>');
+        if (firstTcEnd < 0) return xml;
+        const secondTcStart = rowXml.indexOf('<w:tc>', firstTcEnd);
+        if (secondTcStart < 0) return xml;
+        const secondTcEnd = rowXml.indexOf('</w:tc>', secondTcStart);
+        if (secondTcEnd < 0) return xml;
+        const contentCell = rowXml.substring(secondTcStart, secondTcEnd + 7);
+        // Preserve <w:tcPr>...</w:tcPr> from the content cell
+        const tcPrEnd = contentCell.indexOf('</w:tcPr>');
+        let newCell;
+        if (tcPrEnd >= 0) {
+            newCell = contentCell.substring(0, tcPrEnd + 9) + newContent + '</w:tc>';
+        } else {
+            newCell = '<w:tc>' + newContent + '</w:tc>';
+        }
+        const newRow = rowXml.substring(0, secondTcStart) + newCell + rowXml.substring(secondTcEnd + 7);
+        return xml.substring(0, trStart) + newRow + xml.substring(trEndFull);
+    }
+
+    // Find the Zielerfassung table (identified by "Verhalten" domain label with btLr text direction)
+    const domainMapping = [
+        { label: 'Verhalten', goals: ziele.verhalten, erreicht: lastErreicht.verhalten || [] },
+        { label: 'Kommunikation', goals: ziele.kommunikation, erreicht: lastErreicht.kommunikation || [] },
+        { label: 'Sozialisation', goals: ziele.sozialisation, erreicht: lastErreicht.sozialisation || [] },
+        { label: 'Kognition', goals: ziele.kognition, erreicht: lastErreicht.kognition || [] }
+    ];
+
+    for (const domain of domainMapping) {
+        const content = buildDomainContent(domain.goals, domain.erreicht);
+        docXml = replaceDomainCell(docXml, domain.label, content);
+    }
+
+    // Fill "Andere ELDiB-unabhängige Ziele"
+    {
+        const categories = [
+            { key: 'demarches_mentales', name: 'Démarches mentales' },
+            { key: 'manieres_apprendre', name: 'Manières d\'apprendre' },
+            { key: 'attitudes_relationnelles', name: 'Attitudes relationnelles' },
+            { key: 'attitudes_affectives', name: 'Attitudes affectives' },
+            { key: 'competences_essentielles', name: 'Compétences essentielles' },
+            { key: 'culture_loisirs', name: 'Culture et loisirs' }
+        ];
+        let andereContent = '';
+        for (const cat of categories) {
+            const zielGoals = getZusatzZiele(cat.key);
+            const teilweiseGoals = getZusatzTeilweise(cat.key);
+            const erreichtGoals = getZusatzErreicht(cat.key);
+            const allGoals = [...zielGoals, ...teilweiseGoals, ...erreichtGoals];
+            if (allGoals.length > 0) {
+                andereContent += makePara(makeRun(cat.name + ':', true));
+                for (const g of erreichtGoals) {
+                    andereContent += makePara(makeRun('✓ ' + g.title + ': ' + (g.stufen?.stufe3 || ''), false));
+                }
+                for (const g of teilweiseGoals) {
+                    andereContent += makePara(makeRun('~ ' + g.title + ': ' + (g.stufen?.stufe2 || ''), false));
+                }
+                for (const g of zielGoals) {
+                    andereContent += makePara(makeRun('→ ' + g.title + ': ' + (g.stufen?.stufe1 || ''), false));
+                }
+            }
+        }
+        if (!andereContent) andereContent = makePara('');
+        docXml = replaceDomainCell(docXml, 'Andere ELDiB-unabhängige Ziele', andereContent);
+    }
+
+    // --- 10. Fill Bericht section ---
+    // Fortschritte = zusätzliche Ziele erreicht (stufe3) + teilweise (stufe2)
+    // Anzugehende Themen = zusätzliche Ziele mit Ziel-Status (stufe1)
+    {
+        const categories = [
+            'demarches_mentales', 'manieres_apprendre', 'attitudes_relationnelles',
+            'attitudes_affectives', 'competences_essentielles', 'culture_loisirs'
+        ];
+        let fortschritte = [];
+        let themen = [];
+        for (const cat of categories) {
+            const erreicht = getZusatzErreicht(cat);
+            const teilweise = getZusatzTeilweise(cat);
+            const ziel = getZusatzZiele(cat);
+            for (const g of erreicht) fortschritte.push(g.title + ': ' + (g.stufen?.stufe3 || ''));
+            for (const g of teilweise) fortschritte.push(g.title + ': ' + (g.stufen?.stufe2 || ''));
+            for (const g of ziel) themen.push(g.title + ': ' + (g.stufen?.stufe1 || ''));
+        }
+
+        // Fill CDSE row in Fortschritte table
+        function fillBerichtRow(xml, tableLabel, rowLabel, items) {
+            const tableLabelPos = xml.indexOf(tableLabel);
+            if (tableLabelPos < 0) return xml;
+            const rowPos = xml.indexOf('>' + rowLabel + '<', tableLabelPos);
+            if (rowPos < 0) return xml;
+            // Find the row
+            const trStart = xml.lastIndexOf('<w:tr', rowPos);
+            const trEnd = xml.indexOf('</w:tr>', rowPos);
+            if (trStart < 0 || trEnd < 0) return xml;
+            // Find the second cell (content cell)
+            const rowContent = xml.substring(trStart, trEnd + 7);
+            const firstTcEnd = rowContent.indexOf('</w:tc>');
+            if (firstTcEnd < 0) return xml;
+            const secondTcStart = rowContent.indexOf('<w:tc>', firstTcEnd);
+            if (secondTcStart < 0) return xml;
+            const secondTcEnd = rowContent.indexOf('</w:tc>', secondTcStart);
+            if (secondTcEnd < 0) return xml;
+            const contentCell = rowContent.substring(secondTcStart, secondTcEnd + 7);
+            // Build new content
+            let paras = '';
+            for (const item of items) {
+                paras += makePara(makeRun(item));
+            }
+            if (!paras) paras = makePara('');
+            // Preserve tcPr
+            const tcPrEnd = contentCell.indexOf('</w:tcPr>');
+            let newCell;
+            if (tcPrEnd >= 0) {
+                newCell = contentCell.substring(0, tcPrEnd + 9) + paras + '</w:tc>';
+            } else {
+                newCell = '<w:tc>' + paras + '</w:tc>';
+            }
+            const newRow = rowContent.substring(0, secondTcStart) + newCell + rowContent.substring(secondTcEnd + 7);
+            return xml.substring(0, trStart) + newRow + xml.substring(trEnd + 7);
+        }
+
+        if (fortschritte.length > 0) {
+            docXml = fillBerichtRow(docXml, 'Fortschritte des Sch', 'CDSE', fortschritte);
+        }
+        if (themen.length > 0) {
+            docXml = fillBerichtRow(docXml, 'Anzugehende Themen', 'CDSE', themen);
+        }
+    }
+
+    // --- 11. Write back and download ---
+    zip.file('word/document.xml', docXml);
+    const blob = await zip.generateAsync({
+        type: 'blob',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    });
+    saveAs(blob, 'PEI_' + (stammdaten.schueler_name || 'export') + '.docx');
 }
+
 
 async function generateComplement() {
     const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, VerticalAlign } = docx;
