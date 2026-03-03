@@ -9280,6 +9280,93 @@ async function generatePEI() {
         return '<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="3"/></w:numPr></w:pPr>' + runs + '</w:p>';
     }
 
+    // --- Text transformation for professional PEI formulations ---
+    // Fortschritte (stufe3 - erreicht): Remove "selbstständig", keep conjugated verb form
+    function formatFortschritt(text) {
+        if (!text) return text;
+        let t = text;
+        if (t.startsWith('kann selbstständig ')) {
+            t = t.substring('kann selbstständig '.length);
+            t = 'Kann ' + t;
+        } else if (t.startsWith('kann sich selbstständig ')) {
+            t = 'Kann sich ' + t.substring('kann sich selbstständig '.length);
+        } else {
+            t = t.replace(/ selbstständig /g, ' ').replace(/ selbstständig,/g, ',').replace(/ selbstständig$/g, '');
+        }
+        t = t.replace(/  +/g, ' ').trim();
+        t = t.charAt(0).toUpperCase() + t.slice(1);
+        if (!t.endsWith('.')) t += '.';
+        return t;
+    }
+    // Fortschritte (stufe2 - teilweise): Replace support qualifier with "zunehmend"
+    function formatTeilweise(text) {
+        if (!text) return text;
+        let t = text;
+        const markers = ['wenigen Erinnerungen', 'anfänglicher Anleitung',
+            'Unterstützung', 'Anleitung', 'Anregung', 'Ermutigung', 'Erinnerung',
+            'Begleitung', 'Hinweisen', 'Übung', 'Vorbereitung', 'Vertrauensaufbau',
+            'Gesprächen', 'Erklärung', 'Reflexionsgesprächen', 'Förderung',
+            'Lernstrategien', 'Hilfe', 'Zeit', 'Moderation'];
+        for (const m of markers) {
+            if (t.includes('mit ' + m + ' ')) { t = t.replace('mit ' + m + ' ', 'zunehmend '); break; }
+            if (t.includes('mit ' + m)) { t = t.replace('mit ' + m, 'zunehmend'); break; }
+        }
+        t = t.replace(/  +/g, ' ').trim();
+        t = t.charAt(0).toUpperCase() + t.slice(1);
+        if (!t.endsWith('.')) t += '.';
+        return t;
+    }
+    // Anzugehende Themen (stufe1 - Ziel): Transform to infinitive/goal form
+    function formatAnzugehendesThema(text) {
+        if (!text) return text;
+        let t = text;
+        let m;
+        // "lernt noch, X zu Y" → "X Y."
+        if ((m = t.match(/^lernt noch, (.+) zu (\w+)$/))) {
+            t = m[1] + ' ' + m[2];
+        } else if ((m = t.match(/^lernt noch, (.+?) (\w+zu\w+)$/))) {
+            t = m[1] + ' ' + m[2].replace('zu', '');
+        }
+        // "hat noch Schwierigkeiten, X zu Y" → "X Y."
+        else if ((m = t.match(/^hat noch Schwierigkeiten, (.+) zu (\w+)$/))) {
+            t = m[1] + ' ' + m[2];
+        } else if ((m = t.match(/^hat noch Schwierigkeiten, (.+?) (\w+zu\w+)$/))) {
+            t = m[1] + ' ' + m[2].replace('zu', '');
+        }
+        // "hat noch Schwierigkeiten mit X" → "An X weiterarbeiten."
+        else if ((m = t.match(/^hat noch Schwierigkeiten mit (.+)$/))) {
+            t = 'an ' + m[1] + ' weiterarbeiten';
+        }
+        // "hat noch Schwierigkeiten, X" (no "zu")
+        else if ((m = t.match(/^hat noch Schwierigkeiten, (.+)$/))) {
+            t = m[1];
+        }
+        // "zeigt noch wenig X" → "X weiterentwickeln."
+        else if ((m = t.match(/^zeigt noch wenig (.+)$/))) {
+            t = m[1] + ' weiterentwickeln';
+        }
+        // "hat noch keine/keinen X" → "X entwickeln."
+        else if ((m = t.match(/^hat noch keine?n? (.+)$/))) {
+            t = m[1];
+        }
+        // Patterns with "noch nicht" → remove negation
+        else if (t.includes(' noch nicht ')) {
+            t = t.replace(' noch nicht ', ' ');
+        }
+        // Patterns with "noch " → remove "noch"
+        else if (t.includes(' noch ')) {
+            t = t.replace(' noch ', ' ');
+        }
+        // Clean up compound infinitives: "zu erkennen und kommunizieren" → "erkennen und kommunizieren"
+        t = t.replace(/ zu (\w+en)\b(?= und )/g, ' $1');
+        // Clean up "und zu Y" → "und Y"
+        t = t.replace(/ und zu (\w+)\b/g, ' und $1');
+        t = t.replace(/  +/g, ' ').trim();
+        t = t.charAt(0).toUpperCase() + t.slice(1);
+        if (!t.endsWith('.')) t += '.';
+        return t;
+    }
+
     // --- 3. Remove pink instructional comments (color FF6699) ---
     // Only remove bold/italic pink runs (actual instructions).
     // Non-bold pink text (like "Schüler:in" labels) is kept but de-colored.
@@ -9568,9 +9655,9 @@ async function generatePEI() {
             const erreicht = getZusatzErreicht(cat);
             const teilweise = getZusatzTeilweise(cat);
             const ziel = getZusatzZiele(cat);
-            for (const g of erreicht) fortschritte.push(g.stufen?.stufe3 || g.title);
-            for (const g of teilweise) fortschritte.push(g.stufen?.stufe2 || g.title);
-            for (const g of ziel) themen.push(g.stufen?.stufe1 || g.title);
+            for (const g of erreicht) fortschritte.push(formatFortschritt(g.stufen?.stufe3 || g.title));
+            for (const g of teilweise) fortschritte.push(formatTeilweise(g.stufen?.stufe2 || g.title));
+            for (const g of ziel) themen.push(formatAnzugehendesThema(g.stufen?.stufe1 || g.title));
         }
 
         // Fill CDSE row in Bericht table
