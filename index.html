@@ -9243,28 +9243,17 @@ async function generatePEI() {
     // --- 2. Gather all data ---
     const stammdaten = getStammdaten();
     const ziele = { verhalten: [], kommunikation: [], sozialisation: [], kognition: [] };
-    const erreichte = { verhalten: [], kommunikation: [], sozialisation: [], kognition: [] };
 
     for (const [code, selection] of Object.entries(state.selections)) {
         const bereich = findBereichByCode(code);
         const item = findItemByCode(code);
-        if (bereich && item) {
-            if (selection.status === 'ziel') {
-                ziele[bereich].push({ code, keyword: item.keyword, description: item.description, zieltext: selection.zieltext || item.zielformulierungen[0] });
-            } else if (selection.status === 'erreicht') {
-                erreichte[bereich].push({ code, keyword: item.keyword, description: item.description });
-            }
+        if (bereich && item && selection.status === 'ziel') {
+            ziele[bereich].push({ code, keyword: item.keyword, description: item.description, zieltext: selection.zieltext || item.zielformulierungen[0] });
         }
     }
 
     for (const bereich of Object.keys(ziele)) {
         ziele[bereich].sort((a, b) => parseInt(a.code.split('-').pop()) - parseInt(b.code.split('-').pop()));
-    }
-
-    const lastErreicht = {};
-    for (const [bereich, items] of Object.entries(erreichte)) {
-        const sorted = items.sort((a,b) => parseInt(a.code.split('-').pop()) - parseInt(b.code.split('-').pop()));
-        lastErreicht[bereich] = sorted.slice(-3);
     }
 
     // --- XML helper functions ---
@@ -9283,6 +9272,12 @@ async function generatePEI() {
     }
     function makePara(runs) {
         return '<w:p>' + runs + '</w:p>';
+    }
+    function makeBulletPara(runs) {
+        return '<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="3"/></w:numPr></w:pPr>' + runs + '</w:p>';
+    }
+    function makeSubBulletPara(runs) {
+        return '<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="3"/></w:numPr></w:pPr>' + runs + '</w:p>';
     }
 
     // --- 3. Remove pink instructional comments (color FF6699) ---
@@ -9489,36 +9484,25 @@ async function generatePEI() {
     }
 
     // Fill each domain in the Zielerfassung table
-    function buildDomainContent(domainGoals, domainErreicht) {
+    function buildDomainContent(domainGoals) {
         let content = '';
-        // Reached competences
-        if (domainErreicht && domainErreicht.length > 0) {
-            content += makePara(makeRun('Erreichte Kompetenzen:', true));
-            for (const item of domainErreicht) {
-                content += makePara(makeRun(item.code + ': ' + item.keyword + ' - ' + item.description));
-            }
-            content += makePara('');
-        }
-        // Goals
         if (domainGoals && domainGoals.length > 0) {
             for (const goal of domainGoals) {
-                content += makePara(makeRun(goal.code + ': ' + goal.keyword, true));
-                content += makePara(makeRun(goal.description));
-                content += makePara(makeRun('Zielformulierung für den Schüler/die Schülerin:', true));
-                content += makePara(makeRun('„' + goal.zieltext + '"'));
-            }
-            // Umsetzung CDSE
-            content += makePara(makeRun('Umsetzung CDSE:', true));
-            for (const goal of domainGoals) {
+                // V-25 Keyword: Description
+                content += makePara(makeRun(goal.code + ' ' + goal.keyword + ': ', true) + makeRun(goal.description));
+                content += makePara('');
+                // Zielformulierung: "quoted text"
+                content += makePara(makeRun('Zielformulierung: ', true) + makeRun('\u201E' + goal.zieltext + '\u201C'));
+                content += makePara('');
+                // Mögliche Umsetzung with sub-bullets
+                content += makePara(makeRun('Mögliche Umsetzung', true));
                 const interventions = getInterventionen(goal.code);
-                content += makePara(makeRun(goal.code + ':', true));
                 for (const interv of interventions) {
-                    content += makePara(makeRun('• ' + interv));
+                    content += makeSubBulletPara(makeRun(interv));
                 }
+                content += makePara('');
+                content += makePara('');
             }
-            content += makePara('');
-            content += makePara(makeRun('Umsetzung LP und ESEB Unterstützung:', true));
-            content += makePara('');
         } else {
             content += makePara('');
         }
@@ -9556,53 +9540,23 @@ async function generatePEI() {
 
     // Find the Zielerfassung table (identified by "Verhalten" domain label with btLr text direction)
     const domainMapping = [
-        { label: 'Verhalten', goals: ziele.verhalten, erreicht: lastErreicht.verhalten || [] },
-        { label: 'Kommunikation', goals: ziele.kommunikation, erreicht: lastErreicht.kommunikation || [] },
-        { label: 'Sozialisation', goals: ziele.sozialisation, erreicht: lastErreicht.sozialisation || [] },
-        { label: 'Kognition', goals: ziele.kognition, erreicht: lastErreicht.kognition || [] }
+        { label: 'Verhalten', goals: ziele.verhalten },
+        { label: 'Kommunikation', goals: ziele.kommunikation },
+        { label: 'Sozialisation', goals: ziele.sozialisation },
+        { label: 'Kognition', goals: ziele.kognition }
     ];
 
     for (const domain of domainMapping) {
-        const content = buildDomainContent(domain.goals, domain.erreicht);
+        const content = buildDomainContent(domain.goals);
         docXml = replaceDomainCell(docXml, domain.label, content);
     }
 
-    // Fill "Andere ELDiB-unabhängige Ziele"
-    {
-        const categories = [
-            { key: 'demarches_mentales', name: 'Démarches mentales' },
-            { key: 'manieres_apprendre', name: 'Manières d\'apprendre' },
-            { key: 'attitudes_relationnelles', name: 'Attitudes relationnelles' },
-            { key: 'attitudes_affectives', name: 'Attitudes affectives' },
-            { key: 'competences_essentielles', name: 'Compétences essentielles' },
-            { key: 'culture_loisirs', name: 'Culture et loisirs' }
-        ];
-        let andereContent = '';
-        for (const cat of categories) {
-            const zielGoals = getZusatzZiele(cat.key);
-            const teilweiseGoals = getZusatzTeilweise(cat.key);
-            const erreichtGoals = getZusatzErreicht(cat.key);
-            const allGoals = [...zielGoals, ...teilweiseGoals, ...erreichtGoals];
-            if (allGoals.length > 0) {
-                andereContent += makePara(makeRun(cat.name + ':', true));
-                for (const g of erreichtGoals) {
-                    andereContent += makePara(makeRun('✓ ' + g.title + ': ' + (g.stufen?.stufe3 || ''), false));
-                }
-                for (const g of teilweiseGoals) {
-                    andereContent += makePara(makeRun('~ ' + g.title + ': ' + (g.stufen?.stufe2 || ''), false));
-                }
-                for (const g of zielGoals) {
-                    andereContent += makePara(makeRun('→ ' + g.title + ': ' + (g.stufen?.stufe1 || ''), false));
-                }
-            }
-        }
-        if (!andereContent) andereContent = makePara('');
-        docXml = replaceDomainCell(docXml, 'Andere ELDiB-unabhängige Ziele', andereContent);
-    }
+    // "Andere ELDiB-unabhängige Ziele" cell - left empty (zusätzliche Ziele go to Bericht only)
+    docXml = replaceDomainCell(docXml, 'Andere ELDiB-unabhängige Ziele', makePara(''));
 
     // --- 10. Fill Bericht section ---
-    // Fortschritte = zusätzliche Ziele erreicht (stufe3) + teilweise (stufe2)
-    // Anzugehende Themen = zusätzliche Ziele mit Ziel-Status (stufe1)
+    // Fortschritte = zusätzliche Ziele erreicht (stufe3) + teilweise (stufe2) - bullet points, no titles
+    // Anzugehende Themen = zusätzliche Ziele mit Ziel-Status (stufe1) - bullet points, no titles
     {
         const categories = [
             'demarches_mentales', 'manieres_apprendre', 'attitudes_relationnelles',
@@ -9614,22 +9568,20 @@ async function generatePEI() {
             const erreicht = getZusatzErreicht(cat);
             const teilweise = getZusatzTeilweise(cat);
             const ziel = getZusatzZiele(cat);
-            for (const g of erreicht) fortschritte.push(g.title + ': ' + (g.stufen?.stufe3 || ''));
-            for (const g of teilweise) fortschritte.push(g.title + ': ' + (g.stufen?.stufe2 || ''));
-            for (const g of ziel) themen.push(g.title + ': ' + (g.stufen?.stufe1 || ''));
+            for (const g of erreicht) fortschritte.push(g.stufen?.stufe3 || g.title);
+            for (const g of teilweise) fortschritte.push(g.stufen?.stufe2 || g.title);
+            for (const g of ziel) themen.push(g.stufen?.stufe1 || g.title);
         }
 
-        // Fill CDSE row in Fortschritte table
+        // Fill CDSE row in Bericht table
         function fillBerichtRow(xml, tableLabel, rowLabel, items) {
             const tableLabelPos = xml.indexOf(tableLabel);
             if (tableLabelPos < 0) return xml;
             const rowPos = xml.indexOf('>' + rowLabel + '<', tableLabelPos);
             if (rowPos < 0) return xml;
-            // Find the row
             const trStart = xml.lastIndexOf('<w:tr', rowPos);
             const trEnd = xml.indexOf('</w:tr>', rowPos);
             if (trStart < 0 || trEnd < 0) return xml;
-            // Find the second cell (content cell)
             const rowContent = xml.substring(trStart, trEnd + 7);
             const firstTcEnd = rowContent.indexOf('</w:tc>');
             if (firstTcEnd < 0) return xml;
@@ -9638,13 +9590,12 @@ async function generatePEI() {
             const secondTcEnd = rowContent.indexOf('</w:tc>', secondTcStart);
             if (secondTcEnd < 0) return xml;
             const contentCell = rowContent.substring(secondTcStart, secondTcEnd + 7);
-            // Build new content
+            // Build bullet point content
             let paras = '';
             for (const item of items) {
-                paras += makePara(makeRun(item));
+                paras += makeBulletPara(makeRun(item));
             }
             if (!paras) paras = makePara('');
-            // Preserve tcPr
             const tcPrEnd = contentCell.indexOf('</w:tcPr>');
             let newCell;
             if (tcPrEnd >= 0) {
