@@ -9281,15 +9281,61 @@ async function generatePEI() {
     }
 
     // --- Text transformation for professional PEI formulations ---
-    // Fortschritte (stufe3 - erreicht): Remove "selbstständig", keep conjugated verb form
+    // Helper: try to conjugate infinitive verb to 3rd person for observational style
+    function tryConjugatePhrase(phrase) {
+        if (!phrase || phrase.includes(' und ') || phrase.includes(' oder ')) return null;
+        const words = phrase.trim().split(/\s+/);
+        if (words.length < 2) return null;
+        const verb = words[words.length - 1];
+        const rest = words.slice(0, -1).join(' ');
+        // -ieren verbs: always regular (regulieren → Reguliert)
+        if (verb.endsWith('ieren')) {
+            return verb.charAt(0).toUpperCase() + verb.slice(1, -2) + 't ' + rest;
+        }
+        // Known verb conjugations (3rd person singular)
+        const map = {
+            'zerlegen':'Zerlegt','finden':'Findet','treffen':'Trifft',
+            'ziehen':'Zieht','betrachten':'Betrachtet','hinterfragen':'Hinterfragt',
+            'übertragen':'Überträgt','unterscheiden':'Unterscheidet',
+            'bewältigen':'Bewältigt','lösen':'Löst','pflegen':'Pflegt',
+            'vertreten':'Vertritt','nutzen':'Nutzt','erkennen':'Erkennt',
+            'benennen':'Benennt','bewahren':'Bewahrt','verarbeiten':'Verarbeitet',
+            'verkraften':'Verkraftet','wahren':'Wahrt','leisten':'Leistet',
+            'arbeiten':'Arbeitet','geben':'Gibt','machen':'Macht',
+            'warten':'Wartet','bleiben':'Bleibt','verwalten':'Verwaltet',
+            'vermeiden':'Vermeidet','befolgen':'Befolgt','gestalten':'Gestaltet',
+            'entwickeln':'Entwickelt','lesen':'Liest','schreiben':'Schreibt',
+            'erledigen':'Erledigt','verfassen':'Verfasst','begegnen':'Begegnet',
+            'bewegen':'Bewegt','kochen':'Kocht','spielen':'Spielt',
+            'verarbeiten':'Verarbeitet','genießen':'Genießt',
+        };
+        if (map[verb]) return map[verb] + ' ' + rest;
+        return null;
+    }
+    // Fortschritte (stufe3 - erreicht): Conjugate verbs for variety, remove "selbstständig"
     function formatFortschritt(text) {
         if (!text) return text;
         let t = text;
-        if (t.startsWith('kann selbstständig ')) {
-            t = t.substring('kann selbstständig '.length);
-            t = 'Kann ' + t;
-        } else if (t.startsWith('kann sich selbstständig ')) {
-            t = 'Kann sich ' + t.substring('kann sich selbstständig '.length);
+        if (t.startsWith('kann selbstständig ') || t.startsWith('kann sich selbstständig ')) {
+            let rest, hasSich = false;
+            if (t.startsWith('kann sich selbstständig ')) {
+                rest = t.substring('kann sich selbstständig '.length);
+                hasSich = true;
+            } else {
+                rest = t.substring('kann selbstständig '.length);
+            }
+            const conj = tryConjugatePhrase(rest);
+            if (conj) {
+                // Conjugated form: "Zerlegt ein Problem..." / "Reguliert sich..."
+                if (hasSich) {
+                    const parts = conj.split(' ');
+                    t = parts[0] + ' sich ' + parts.slice(1).join(' ');
+                } else {
+                    t = conj;
+                }
+            } else {
+                t = hasSich ? ('Kann sich ' + rest) : ('Kann ' + rest);
+            }
         } else {
             t = t.replace(/ selbstständig /g, ' ').replace(/ selbstständig,/g, ',').replace(/ selbstständig$/g, '');
         }
