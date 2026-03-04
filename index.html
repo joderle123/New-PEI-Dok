@@ -10664,45 +10664,39 @@ async function generateDSFromTemplate(isComplete) {
     }
 
     // Helper: replace the entire content between two section headings
+    // Handles text split across multiple XML runs by checking concatenated paragraph text
     function replaceSectionContent(xml, headingText, newContentParas) {
-        // Find the heading paragraph - skip TOC entries by looking for Heading1/Heading2 style nearby
-        let headingIdx = -1;
-        let searchFrom = 0;
-        while (true) {
-            const idx = xml.indexOf(headingText, searchFrom);
-            if (idx < 0) break;
-            // Check if this is in a real heading paragraph (has Heading1 or Heading2 style)
-            const pStart = xml.lastIndexOf('<w:p ', idx);
-            if (pStart >= 0) {
-                const pContent = xml.substring(pStart, idx);
-                if (pContent.includes('Heading1') || pContent.includes('Heading2')) {
-                    headingIdx = idx;
-                    break;
-                }
-            }
-            searchFrom = idx + 1;
-        }
-        if (headingIdx < 0) return xml;
-        // Find end of heading paragraph
-        const headingPEnd = xml.indexOf('</w:p>', headingIdx);
-        if (headingPEnd < 0) return xml;
-        const afterHeading = headingPEnd + 6;
-        // Find next heading or section break
-        const nextHeading1 = xml.indexOf('<w:pStyle w:val="Heading1"/>', afterHeading);
-        const nextHeading2 = xml.indexOf('<w:pStyle w:val="Heading2"/>', afterHeading);
-        const nextPageBreak = xml.indexOf('<w:lastRenderedPageBreak/>', afterHeading);
-        let endPos = xml.length;
-        // Find the paragraph start before the next heading
-        for (const pos of [nextHeading1, nextHeading2]) {
-            if (pos > 0 && pos < endPos) {
-                // Go back to find the <w:p that contains this heading style
-                const pBefore = xml.lastIndexOf('<w:p ', pos);
-                const pBefore2 = xml.lastIndexOf('<w:p>', pos);
-                const pStart = Math.max(pBefore, pBefore2);
-                if (pStart > afterHeading && pStart < endPos) endPos = pStart;
+        // Find heading paragraph by scanning all paragraphs and checking combined run text
+        const pRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
+        let headingPStart = -1;
+        let headingPEnd = -1;
+        let pMatch;
+        while ((pMatch = pRegex.exec(xml)) !== null) {
+            const paraXml = pMatch[0];
+            // Must be a Heading1 or Heading2 paragraph
+            if (!paraXml.includes('Heading1') && !paraXml.includes('Heading2')) continue;
+            // Get combined text from all runs
+            const textParts = [...paraXml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)];
+            const fullText = textParts.map(m => m[1]).join('');
+            if (fullText.includes(headingText)) {
+                headingPStart = pMatch.index;
+                headingPEnd = pMatch.index + pMatch[0].length;
+                break;
             }
         }
-        return xml.substring(0, afterHeading) + newContentParas + xml.substring(endPos);
+        if (headingPStart < 0) return xml;
+        const afterHeading = headingPEnd;
+        // Find next heading paragraph (Heading1 or Heading2) after this one
+        pRegex.lastIndex = afterHeading;
+        let nextHeadingStart = xml.length;
+        while ((pMatch = pRegex.exec(xml)) !== null) {
+            const paraXml = pMatch[0];
+            if (paraXml.includes('Heading1') || paraXml.includes('Heading2')) {
+                nextHeadingStart = pMatch.index;
+                break;
+            }
+        }
+        return xml.substring(0, afterHeading) + newContentParas + xml.substring(nextHeadingStart);
     }
 
     // --- 3. Fill cover page - Student info table (Table 0) ---
@@ -10859,15 +10853,31 @@ async function generateDSFromTemplate(isComplete) {
     }
 
     // --- 5. Fill Header ---
-    // Header 1 (pages 2+): Replace "NAME Vorname des Schülers/der Schüler:in"
+    // Header 1 (pages 2+): Replace student name and SVN
     if (studentName) {
-        header1Xml = header1Xml.replace(/>NAME Vorname</g, '>' + escapeXml(studentName) + '<');
+        // "NAME" and "Vorname" are separate runs - replace "NAME" first, then "Vorname" with empty
+        // Replace paragraph containing "NAME" - rebuild the text area
+        const nameRunRegex = />NAME<\/w:t>/;
+        if (nameRunRegex.test(header1Xml)) {
+            header1Xml = header1Xml.replace('>NAME</w:t>', '>' + escapeXml(studentName) + '</w:t>');
+            // Remove the separate "Vorname" run and the static label runs
+            header1Xml = header1Xml.replace('>Vorname</w:t>', '></w:t>');
+            header1Xml = header1Xml.replace('>des </w:t>', '></w:t>');
+            header1Xml = header1Xml.replace('>Schülers</w:t>', '></w:t>');
+            header1Xml = header1Xml.replace('>/der </w:t>', '></w:t>');
+            header1Xml = header1Xml.replace('>Schüler</w:t>', '></w:t>');
+            header1Xml = header1Xml.replace('>:</w:t>', '></w:t>');
+            header1Xml = header1Xml.replace('>in</w:t>', '></w:t>');
+        }
+        // Replace SVN in header
+        if (stammdaten.matricule) {
+            header1Xml = header1Xml.replace('>Sozialversicherungsnummer</w:t>', '>' + escapeXml(stammdaten.matricule) + '</w:t>');
+        } else {
+            header1Xml = header1Xml.replace('>Sozialversicherungsnummer</w:t>', '></w:t>');
+        }
     }
     // Header 2 (first page): Replace "Munsbach, den XX.XX.20XX"
-    {
-        const dateStr = 'Munsbach, den ' + today;
-        header2Xml = header2Xml.replace(/XX\.XX\.20XX/g, today);
-    }
+    header2Xml = header2Xml.replace(/XX\.XX\.20XX/g, today);
 
     // --- 6. Fill section content (for complete export) ---
     if (isComplete) {
@@ -10883,45 +10893,59 @@ async function generateDSFromTemplate(isComplete) {
         const spezifischeBeduerfnisseText = generateSpezifischeBeduerfnisseText(dsData);
         const empfehlungenText = generateEmpfehlungenText(dsData);
 
+        // Helper: Convert multi-line text to multiple paragraphs
+        function textToParas(text) {
+            if (!text) return makePara(makeRun(''));
+            const lines = text.split('\n');
+            return lines.map(line => makePara(makeRun(line))).join('');
+        }
+
         // Replace section 1: Auftragsklärung
-        docXml = replaceSectionContent(docXml, 'Auftragskl\u00E4rung', 
-            makePara(makeRun(auftragsklarungText)));
+        docXml = replaceSectionContent(docXml, 'Auftragsklärung', textToParas(auftragsklarungText));
 
-        // Replace section 2.1: Vorgeschichte
-        docXml = replaceSectionContent(docXml, '2.1 Vorgeschichte',
-            makePara(makeRun(vorgeschichteText)));
+        // Replace section 2.1: Vorgeschichte (keep Maßnahmen table from template)
+        docXml = replaceSectionContent(docXml, '2.1 Vorgeschichte', textToParas(vorgeschichteText));
 
-        // Replace section 2.2: Sozialbericht  
-        docXml = replaceSectionContent(docXml, '2.2 Sozialbericht',
-            makePara(makeRun(sozialberichtText)));
+        // Replace section 2.2: Sozialbericht
+        docXml = replaceSectionContent(docXml, '2.2 Sozialbericht', textToParas(sozialberichtText));
 
         // Replace section 3: Aktuelle Situation intro text
-        docXml = replaceSectionContent(docXml, 'Aktuelle Situation',
-            makePara(makeRun(aktuelleSituationText)));
+        docXml = replaceSectionContent(docXml, 'Aktuelle Situation', textToParas(aktuelleSituationText));
+
+        // Replace section 3.1: Aktuelle Maßnahmen (content after heading has placeholder table)
+        // We use replaceSectionContent to replace the placeholder instructions
+        if (dsData.aktuelleMassnahmen && dsData.aktuelleMassnahmen.length > 0) {
+            let massnahmenParas = '';
+            dsData.aktuelleMassnahmen.forEach(m => {
+                massnahmenParas += makePara(makeRun((m.zeitraum || '') + ' | ' + (m.klasse || '') + ' | ' + (MASSNAHME_NAMEN[m.art] || m.art || '') + ' | ' + (m.akteur || '')));
+            });
+            docXml = replaceSectionContent(docXml, '3.1 Aktuelle', massnahmenParas);
+        }
 
         // Replace section 3.2: Sichtweise der Schule
-        docXml = replaceSectionContent(docXml, '3.2 Sichtweise der Schule',
-            makePara(makeRun(sichtweiseSchuleText)));
+        docXml = replaceSectionContent(docXml, '3.2 Sichtweise der Schule', textToParas(sichtweiseSchuleText));
 
         // Replace section 3.3: Sichtweise des Schülers
-        docXml = replaceSectionContent(docXml, '3.3 Sichtweise des Sch',
-            makePara(makeRun(sichtweiseSchuelerText)));
+        docXml = replaceSectionContent(docXml, '3.3 Sichtweise des Sch', textToParas(sichtweiseSchuelerText));
 
         // Replace section 3.4: Sichtweise der Eltern
-        docXml = replaceSectionContent(docXml, '3.4 Sichtweise der Eltern',
-            makePara(makeRun(sichtweiseElternText)));
+        docXml = replaceSectionContent(docXml, '3.4 Sichtweise der Eltern', textToParas(sichtweiseElternText));
+
+        // Replace section "Diagnostische Verfahren" intro text
+        {
+            const diagIntro = 'Diese Einschätzung wurde aufgrund von ' + (dsData.ds_testmethoden || 'ELDiB (Entwicklungstherapeutischer/Entwicklungspädagogischer Lernziel-Diagnose-Bogen)') + ' und der Beobachtungen' + (dsData.ds_test_ort ? ' in ' + dsData.ds_test_ort : '') + ' durchgeführt.';
+            docXml = replaceSectionContent(docXml, 'Diagnostische Verfahren', makePara(makeRun(diagIntro)));
+        }
 
         // Replace section 4.1: Verhaltensbeobachtungen
         docXml = replaceSectionContent(docXml, '4.1 Verhaltensbeobachtungen',
             makePara(makeRun(verhaltensbeobachtungenText)));
 
         // Replace section 4.3: Interpretation
-        docXml = replaceSectionContent(docXml, '4.3 Interpretation',
-            makePara(makeRun(interpretationText)));
+        docXml = replaceSectionContent(docXml, '4.3 Interpretation', textToParas(interpretationText));
 
         // Replace section 5.1: Spezifische Bedürfnisse
-        docXml = replaceSectionContent(docXml, '5.1 Spezifische Bed',
-            makePara(makeRun(spezifischeBeduerfnisseText)));
+        docXml = replaceSectionContent(docXml, '5.1 Spezifische Bed', textToParas(spezifischeBeduerfnisseText));
 
         // Replace section 5.3: Empfehlungen
         {
@@ -10934,59 +10958,32 @@ async function generateDSFromTemplate(isComplete) {
                 empfParas || makePara(makeRun(empfehlungenText)));
         }
 
-        // Replace section 5.4: Empfehlungen - CNI
-        {
-            const cniText = dsData.ds_cni_begruendung || '';
-            docXml = replaceSectionContent(docXml, '5.4 Empfehlungen - CNI',
-                makePara(makeRun(cniText)));
-        }
-
-        // Schlussfolgerung intro text
+        // Schlussfolgerung intro text - replace content between "Schlussfolgerung" heading and "5.1"
         {
             let schlussText = '';
             if (dsData.ds_empfehlungen_abgestimmt === 'ja_einverstanden') {
-                schlussText = 'Auf Basis der erhobenen Testergebnisse, Beobachtungen und anamnestischen Informationen wurden in enger Abstimmung mit ' + (biologicalAge && biologicalAge.years >= 12 ? 'dem Sch\u00fcler bzw. der Sch\u00fclerin sowie ' : '') + 'den Eltern gezielte F\u00f6rderbedarfe identifiziert. Daraus abgeleitet wurden gemeinsam Empfehlungen formuliert, die die individuelle Entwicklung wirksam unterst\u00fctzen sollen.';
+                schlussText = 'Auf Basis der erhobenen Testergebnisse, Beobachtungen und anamnestischen Informationen wurden in enger Abstimmung mit ' + (biologicalAge && biologicalAge.years >= 12 ? 'dem Schüler bzw. der Schülerin sowie ' : '') + 'den Eltern gezielte Förderbedarfe identifiziert. Daraus abgeleitet wurden gemeinsam Empfehlungen formuliert, die die individuelle Entwicklung wirksam unterstützen sollen.';
             } else if (dsData.ds_empfehlungen_abgestimmt === 'ja_vorbehalte') {
-                schlussText = 'Auf Grundlage der vorliegenden Testergebnisse, Beobachtungen und anamnestischen Informationen wurden spezifische F\u00f6rderbedarfe identifiziert. In Gespr\u00e4chen mit ' + (biologicalAge && biologicalAge.years >= 12 ? 'dem Sch\u00fcler bzw. der Sch\u00fclerin sowie ' : '') + 'den Eltern konnten Empfehlungen zur weiteren Unterst\u00fctzung der individuellen Entwicklung erarbeitet werden. Dabei wurden einzelne vorgeschlagene Ma\u00dfnahmen von Seiten der Eltern bzw. des/der Sch\u00fcler:in kritisch hinterfragt bzw. nicht vollst\u00e4ndig bef\u00fcrwortet.' + (dsData.ds_vorbehalte_details ? ' ' + dsData.ds_vorbehalte_details : '');
+                schlussText = 'Auf Grundlage der vorliegenden Testergebnisse, Beobachtungen und anamnestischen Informationen wurden spezifische Förderbedarfe identifiziert. In Gesprächen mit ' + (biologicalAge && biologicalAge.years >= 12 ? 'dem Schüler bzw. der Schülerin sowie ' : '') + 'den Eltern konnten Empfehlungen zur weiteren Unterstützung der individuellen Entwicklung erarbeitet werden. Dabei wurden einzelne vorgeschlagene Maßnahmen von Seiten der Eltern bzw. des/der Schüler:in kritisch hinterfragt bzw. nicht vollständig befürwortet.' + (dsData.ds_vorbehalte_details ? ' ' + dsData.ds_vorbehalte_details : '');
+            } else {
+                schlussText = 'Auf Basis der erhobenen Testergebnisse, Beobachtungen und anamnestischen Informationen wurden gezielte Förderbedarfe identifiziert und Empfehlungen formuliert.';
             }
-            if (schlussText) {
-                // Find "Schlussfolgerung" heading and replace the two template paragraphs
-                const schlussIdx = docXml.indexOf('Schlussfolgerung</w:t>');
-                if (schlussIdx > 0) {
-                    // Find "oder" paragraph and remove it along with both template paragraphs
-                    const oderPos = docXml.indexOf('>oder<', schlussIdx);
-                    if (oderPos > 0) {
-                        // Find the paragraph containing "Auf Basis"
-                        const aufBasisPos = docXml.indexOf('Auf Basis der erhobenen', schlussIdx);
-                        if (aufBasisPos > 0) {
-                            const pBefore = docXml.lastIndexOf('<w:p ', aufBasisPos);
-                            if (pBefore > 0) {
-                                // Find end of "Auf Grundlage" paragraph
-                                const aufGrundlagePos = docXml.indexOf('Auf Grundlage', schlussIdx);
-                                if (aufGrundlagePos > 0) {
-                                    const pEndGrund = docXml.indexOf('</w:p>', aufGrundlagePos);
-                                    if (pEndGrund > 0) {
-                                        const replaceEnd = pEndGrund + 6;
-                                        const newPara = makePara(makeRun(schlussText));
-                                        docXml = docXml.substring(0, pBefore) + newPara + docXml.substring(replaceEnd);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            docXml = replaceSectionContent(docXml, 'Schlussfolgerung', makePara(makeRun(schlussText)));
         }
 
-        // Verfasser
-        if (dsData.ds_verfasser_name) {
-            docXml = docXml.replace('>Name des Verfassers des Berichts (unterschreiben)<', '>' + escapeXml(dsData.ds_verfasser_name) + '<');
-        }
-        if (dsData.ds_verfasser_beruf) {
-            const berufIdx = docXml.indexOf('>Berufsbezeichnung<');
-            if (berufIdx >= 0) {
-                docXml = docXml.substring(0, berufIdx) + '>' + escapeXml(dsData.ds_verfasser_beruf) + '<' + docXml.substring(berufIdx + '>Berufsbezeichnung<'.length);
-            }
+        // Replace section 5.4: Empfehlungen - CNI (include Verfasser block)
+        {
+            const cniText = dsData.ds_cni_begruendung || '';
+            const verfasserName = dsData.ds_verfasser_name || 'Name des Verfassers des Berichts';
+            const verfasserBeruf = dsData.ds_verfasser_beruf || 'Berufsbezeichnung';
+            const cniContent = makePara(makeRun(cniText)) +
+                makePara(makeRun('')) +
+                makePara(makeRun('')) +
+                makePara(makeRun('___________________________')) +
+                makePara(makeRun(verfasserName)) +
+                makePara(makeRun(verfasserBeruf)) +
+                makePara(makeRun('Unité de diagnostic, de conseil et de suivi'));
+            docXml = replaceSectionContent(docXml, '5.4 Empfehlungen - CNI', cniContent);
         }
     }
 
@@ -11041,22 +11038,8 @@ async function generateDSFromTemplate(isComplete) {
                 section42 += makePara(makeRun(''));
             });
 
-            // Replace section 4.2 content
-            // Find the section 4.2 heading
-            const s42Idx = docXml.indexOf('4.2 Ergebnisse der Testverfahren');
-            if (s42Idx > 0) {
-                const s42PEnd = docXml.indexOf('</w:p>', s42Idx);
-                if (s42PEnd > 0) {
-                    // Find the next heading (4.3)
-                    const s43Idx = docXml.indexOf('4.3 Interpretation');
-                    if (s43Idx > 0) {
-                        const s43PStart = docXml.lastIndexOf('<w:p ', s43Idx);
-                        if (s43PStart > 0) {
-                            docXml = docXml.substring(0, s42PEnd + 6) + section42 + docXml.substring(s43PStart);
-                        }
-                    }
-                }
-            }
+            // Replace section 4.2 content using the robust heading search
+            docXml = replaceSectionContent(docXml, '4.2 Ergebnisse', section42);
         }
     }
 
@@ -11108,20 +11091,8 @@ async function generateDSFromTemplate(isComplete) {
                 zieleContent += makePara(makeRun('Zusätzliche Ziele: ' + dsData.ds_zusaetzliche_ziele));
             }
 
-            // Replace section 5.2
-            const s52Idx = docXml.indexOf('5.2 Ziele');
-            if (s52Idx > 0) {
-                const s52PEnd = docXml.indexOf('</w:p>', s52Idx);
-                if (s52PEnd > 0) {
-                    const s53Idx = docXml.indexOf('5.3 Empfehlungen');
-                    if (s53Idx > 0) {
-                        const s53PStart = docXml.lastIndexOf('<w:p ', s53Idx);
-                        if (s53PStart > 0) {
-                            docXml = docXml.substring(0, s52PEnd + 6) + zieleContent + docXml.substring(s53PStart);
-                        }
-                    }
-                }
-            }
+            // Replace section 5.2 using robust heading search
+            docXml = replaceSectionContent(docXml, '5.2 Ziele', zieleContent);
         }
     }
 
