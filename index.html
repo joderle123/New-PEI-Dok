@@ -6822,7 +6822,7 @@ function generateVorgeschichteText(dsData) {
         text += '\n\n' + dsData.ds_vorgeschichte_weitere;
     }
 
-    return text || '(Frühkindliche Entwicklung, Diagnosen, bisherige Maßnahmen)';
+    return fixSentenceStart(text) || '(Frühkindliche Entwicklung, Diagnosen, bisherige Maßnahmen)';
 }
 
 function generateSozialberichtText(dsData) {
@@ -6957,7 +6957,7 @@ function generateSozialberichtText(dsData) {
         text += '\n\n' + dsData.ds_sozialbericht_weitere;
     }
 
-    return text || '(Familiensituation, Sprachen zu Hause)';
+    return fixSentenceStart(text) || '(Familiensituation, Sprachen zu Hause)';
 }
 
 function generateAktuelleSituationText(dsData, stammdaten) {
@@ -6979,6 +6979,20 @@ function joinNatural(items, connector = 'und') {
     if (items.length === 1) return items[0];
     if (items.length === 2) return items[0] + ' ' + connector + ' ' + items[1];
     return items.slice(0, -1).join(', ') + ' ' + connector + ' ' + items[items.length - 1];
+}
+
+// Hilfsfunktion: Ersten Buchstaben groß machen (für Satzanfänge)
+function capitalize(str) {
+    if (!str) return str;
+    return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+// Hilfsfunktion: Korrigiert Satzanfänge nach Punkt/Absatz - "das Kind" → "Das Kind" etc.
+function fixSentenceStart(text) {
+    if (!text) return text;
+    // Nach Punkt+Leerzeichen oder am Textanfang: Kleinbuchstabe → Großbuchstabe
+    text = text.replace(/(^|[.!?]\s+)([a-zäöü])/gm, (match, prefix, letter) => prefix + letter.toUpperCase());
+    return text;
 }
 
 // Hilfsfunktion für grammatikalisch korrekte Namensformen
@@ -7249,7 +7263,7 @@ function generateSichtweiseSchuleText(dsData) {
         text += '.';
     }
 
-    return text.trim() || '(Schulische Perspektive wird hier eingefügt)';
+    return fixSentenceStart(text.trim()) || '(Schulische Perspektive wird hier eingefügt)';
 }
 
 function generateSichtweiseSchuelerText(dsData, stammdaten) {
@@ -7503,7 +7517,7 @@ function generateSichtweiseSchuelerText(dsData, stammdaten) {
         }
     }
 
-    return text.trim() || '(Kindperspektive wird hier eingefügt)';
+    return fixSentenceStart(text.trim()) || '(Kindperspektive wird hier eingefügt)';
 }
 
 function generateSichtweiseElternText(dsData) {
@@ -7720,7 +7734,7 @@ function generateSichtweiseElternText(dsData) {
         }
     }
 
-    return text.trim() || '(Familiäre Perspektive wird hier eingefügt)';
+    return fixSentenceStart(text.trim()) || '(Familiäre Perspektive wird hier eingefügt)';
 }
 
 function generateVerhaltensbeobachtungenText(dsData) {
@@ -7916,9 +7930,9 @@ function generateVerhaltensbeobachtungenText(dsData) {
 
     // Übergreifende Einleitung
     if (beobachtungsTexte.length > 1) {
-        return `Im Rahmen der Diagnostik wurde ${name} in verschiedenen Situationen beobachtet:\n\n${beobachtungsTexte.join('\n\n---\n\n')}`;
+        return fixSentenceStart(`Im Rahmen der Diagnostik wurde ${name} in verschiedenen Situationen beobachtet:\n\n${beobachtungsTexte.join('\n\n---\n\n')}`);
     } else if (beobachtungsTexte.length === 1) {
-        return beobachtungsTexte[0];
+        return fixSentenceStart(beobachtungsTexte[0]);
     }
 
     return '(Verhaltensbeobachtungen werden hier eingefügt)';
@@ -7977,7 +7991,7 @@ function generateInterpretationText(dsData) {
                 if (konvergenzPunkte.length === 1) {
                     konvergenzText += konvergenzPunkte[0] + '. ';
                 } else {
-                    konvergenzText += konvergenzPunkte.slice(0, -1).join('; ') + '. Zudem ' + konvergenzPunkte[konvergenzPunkte.length - 1] + '. ';
+                    konvergenzText += konvergenzPunkte.slice(0, -1).join('; ') + '. Darüber hinaus ' + konvergenzPunkte[konvergenzPunkte.length - 1] + '. ';
                 }
             }
 
@@ -8058,7 +8072,11 @@ function generateInterpretationText(dsData) {
         }
 
         if (persoenlich.length > 0) {
-            erklaerText += `Darüber hinaus lassen sich ${persoenlich.join(', ')} als mögliche Hintergründe annehmen. `;
+            if (persoenlich.length === 1) {
+                erklaerText += `Darüber hinaus lässt sich ${persoenlich[0]} als möglicher Hintergrund annehmen. `;
+            } else {
+                erklaerText += `Darüber hinaus lassen sich ${joinNatural(persoenlich)} als mögliche Hintergründe annehmen. `;
+            }
         }
 
         // Äußere Einflüsse
@@ -8181,7 +8199,7 @@ function generateInterpretationText(dsData) {
         paragraphs.push(`Insgesamt ergibt sich für ${nameAkk} ein Bild, in dem verschiedene Faktoren zusammenwirken. Diese Analyse bildet die Grundlage für eine gezielte, auf die individuellen Bedürfnisse abgestimmte Förderplanung.`);
     }
 
-    return paragraphs.join('\n\n') || '(Zusammenfassende Bewertung wird hier eingefügt)';
+    return fixSentenceStart(paragraphs.join('\n\n')) || '(Zusammenfassende Bewertung wird hier eingefügt)';
 }
 
 function generateSpezifischeBeduerfnisseText(dsData) {
@@ -8262,16 +8280,17 @@ function generateSpezifischeBeduerfnisseText(dsData) {
         }
     }
 
-    return text.trim() || '(Spezifische Bedürfnisse und Ressourcen werden hier eingefügt)';
+    return fixSentenceStart(text.trim()) || '(Spezifische Bedürfnisse und Ressourcen werden hier eingefügt)';
 }
 
 function generateEmpfehlungenText(dsData) {
-    const name = document.getElementById('schueler_name')?.value?.split(',')[0]?.trim() || 'Das Kind';
+    const rawName = document.getElementById('schueler_name')?.value?.split(',')[0]?.trim();
+    const name = rawName || 'das Kind';
 
     // Text-Mappings für natürliche Sprache
     const M = {
-        familie: { 'step': 'die Teilnahme am STEP-Elterntraining (im CDSE)', 'erziehungsberatung': 'eine Erziehungsberatung', 'familientherapie': 'eine Familientherapie', 'strukturen_zuhause': 'die Etablierung klarerer Strukturen im häuslichen Umfeld', 'austausch_schule': 'einen regelmäßigen Austausch zwischen Familie und Schule' },
-        schule: { 'sitzplatz': 'eine Optimierung des Sitzplatzes', 'differenzierung': 'differenzierte Aufgabenstellungen', 'positives_feedback': 'häufiges positives Feedback', 'klare_regeln': 'klare Regeln mit transparenten Konsequenzen', 'auszeit': 'eine Auszeitmöglichkeit', 'verstaerkerplan': 'einen Verstärkerplan', 'iebs': 'die Unterstützung durch eine I-EBS' },
+        familie: { 'step': 'die Teilnahme am STEP-Elterntraining (im CDSE)', 'erziehungsberatung': 'eine Erziehungsberatung', 'familientherapie': 'eine Familientherapie', 'strukturen_zuhause': 'die Etablierung klarerer Strukturen im häuslichen Umfeld', 'austausch_schule': 'ein regelmäßiger Austausch zwischen Familie und Schule' },
+        schule: { 'sitzplatz': 'eine Optimierung des Sitzplatzes', 'differenzierung': 'differenzierte Aufgabenstellungen', 'positives_feedback': 'häufiges positives Feedback', 'klare_regeln': 'klare Regeln mit transparenten Konsequenzen', 'auszeit': 'eine Auszeitmöglichkeit', 'verstaerkerplan': 'ein Verstärkerplan', 'iebs': 'die Unterstützung durch eine I-EBS' },
         regional: { 'eseb_weiter': 'die weiterführende Begleitung durch den ESEB', 'isa': 'eine spezialisierte ambulante Intervention (ISA)', 'conseil': 'Conseil & Guidance', 'lernwerkstatt': 'eine spezialisierte Lernwerkstatt', 'therapeutisch': 'therapeutische Maßnahmen' }
     };
 
@@ -8364,7 +8383,7 @@ function generateEmpfehlungenText(dsData) {
         text += `\n\nDie erfolgreiche Umsetzung dieser Maßnahmen setzt eine gute Vernetzung aller beteiligten Akteure voraus, um ${name} optimal zu unterstützen.`;
     }
 
-    return text.trim() || '(Maßnahmen für Familie, Schule, außerschulischen Kontext)';
+    return fixSentenceStart(text.trim()) || '(Maßnahmen für Familie, Schule, außerschulischen Kontext)';
 }
 
 // ==========================================
@@ -9443,21 +9462,25 @@ async function generatePEI() {
                         const width = widthMatch ? parseInt(widthMatch[1]) : 0;
 
                         if (width === 595 && col595 < 4) {
-                            // First grid cell - check for number content
-                            const numMatches = cellXml.match(/<w:t[^>]*>(\d+)<\/w:t>/g);
-                            if (numMatches) {
-                                for (const nm of numMatches) {
-                                    const n = nm.match(/>(\d+)</);
-                                    if (n) {
-                                        const num = parseInt(n[1]);
-                                        const prefix = domains[col595];
-                                        const color = getItemColor(prefix, num);
-                                        if (color !== 'FFFFFF') {
-                                            cellXml = cellXml.replace(
-                                                /(<w:shd[^>]*w:fill=")auto(")/,
-                                                '$1' + color + '$2'
-                                            );
-                                        }
+                            // Grid cell in one of the 4 domain columns - check for number content
+                            const textMatches = [...cellXml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)];
+                            const cellText = textMatches.map(m => m[1]).join('').trim();
+                            const num = parseInt(cellText);
+                            if (!isNaN(num) && num >= 1 && num <= 62) {
+                                const prefix = domains[col595];
+                                const color = getItemColor(prefix, num);
+                                if (color !== 'FFFFFF') {
+                                    // Robust shading: try 3 strategies
+                                    const shdXml = '<w:shd w:val="clear" w:color="auto" w:fill="' + color + '"/>';
+                                    if (cellXml.includes('w:fill="')) {
+                                        // Replace existing fill color (any format)
+                                        cellXml = cellXml.replace(/w:fill="[A-Fa-f0-9a-z]+"/g, 'w:fill="' + color + '"');
+                                    } else if (cellXml.includes('</w:tcPr>')) {
+                                        // Insert shd before closing tcPr
+                                        cellXml = cellXml.replace('</w:tcPr>', shdXml + '</w:tcPr>');
+                                    } else {
+                                        // No tcPr exists - create one after the opening <w:tc> tag
+                                        cellXml = cellXml.replace(/(<w:tc>)/, '$1<w:tcPr>' + shdXml + '</w:tcPr>');
                                     }
                                 }
                             }
@@ -10489,7 +10512,7 @@ async function generateDSFromTemplate(isComplete) {
     const birthDate = document.getElementById('geburtsdatum')?.value;
     const biologicalAge = dsCalculateBiologicalAge(birthDate);
     const devAges = dsCalculateAllDevelopmentalAges();
-    const studentName = stammdaten.schueler_name || '';
+    const studentName = stammdaten.schueler_name?.split(',')[0]?.trim() || 'der/die Schüler:in';
 
     // --- XML helper functions ---
     function escapeXml(str) {
